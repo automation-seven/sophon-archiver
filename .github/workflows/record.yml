@@ -1,0 +1,45 @@
+name: record-live
+
+on:
+  repository_dispatch:
+    types: [record-live]
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    # GitHub hosted runners hard-cap at 6 hours per job; leave a safety buffer
+    timeout-minutes: 340
+    steps:
+      - name: Install yt-dlp, ffmpeg, awscli
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+          pip install -U yt-dlp awscli
+
+      - name: Build safe filename
+        id: meta
+        run: |
+          TITLE="${{ github.event.client_payload.title }}"
+          SAFE_TITLE=$(echo "${TITLE:-live-recording}" | tr -c 'a-zA-Z0-9-_' '-' | cut -c1-60)
+          FILENAME="${SAFE_TITLE}-$(date +%Y%m%d-%H%M%S).mp4"
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+
+      - name: Capture live stream
+        env:
+          URL: ${{ github.event.client_payload.url }}
+        run: |
+          mkdir -p output
+          # Waits on an in-progress live stream and records until it ends.
+          # Add --live-from-start below if the broadcaster has DVR/rewind enabled
+          # and you want the recording to start from the actual beginning.
+          yt-dlp --no-part -f "best[ext=mp4]/best" -o "output/recording.mp4" "$URL"
+
+      - name: Upload to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          aws s3 cp output/recording.mp4 \
+            "s3://${{ secrets.R2_BUCKET }}/${{ steps.meta.outputs.filename }}" \
+            --endpoint-url "${{ secrets.R2_ENDPOINT }}"

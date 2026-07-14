@@ -1,0 +1,16 @@
+name = "sophon-archiver"
+main = "src/worker.js"
+compatibility_date = "2024-09-23"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "live-archive"
+
+# Set these with `wrangler secret put <NAME>` (see README) — do not put real values here:
+# GH_TOKEN  - GitHub fine-grained PAT with "Contents: read" and "Actions: read/write" on this repo
+# GH_OWNER  - your GitHub username
+# GH_REPO   - the repo name containing .github/workflows/record.yml

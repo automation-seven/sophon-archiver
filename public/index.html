@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Live Archiver</title>
+<style>
+  :root { --bg: #0f1115; --card: #171a21; --text: #e8e8ea; --muted: #9a9ea6; --accent: #6c8cff; --ok: #4caf50; --err: #e5534b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 32px 16px; }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  p.sub { color: var(--muted); font-size: 14px; margin-top: 0; margin-bottom: 24px; }
+  .card { background: var(--card); border-radius: 12px; padding: 20px; margin-bottom: 16px; border: 1px solid #232733; }
+  input[type=text] { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2c3140; background: #0f1115; color: var(--text); font-size: 14px; margin-bottom: 10px; }
+  button { background: var(--accent); color: white; border: none; padding: 10px 16px; border-radius: 8px; font-size: 14px; cursor: pointer; font-weight: 600; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.in_progress, .dot.queued { background: var(--accent); animation: pulse 1.2s infinite; }
+  .dot.completed.success { background: var(--ok); }
+  .dot.completed.failure { background: var(--err); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  a.gh-link { color: var(--muted); font-size: 12px; }
+  .recording-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #232733; font-size: 14px; gap: 10px; }
+  .recording-item:last-child { border-bottom: none; }
+  a.watch { color: var(--accent); text-decoration: none; font-size: 13px; white-space: nowrap; }
+  .muted { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Live Archiver</h1>
+  <p class="sub">Paste a live broadcast URL. It records and uploads even if you close this tab.</p>
+
+  <div class="card">
+    <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." />
+    <input type="text" id="title" placeholder="Title (optional, e.g. john-obidi-live-jul13)" />
+    <button id="recordBtn">Start Recording</button>
+  </div>
+
+  <div class="card" id="statusCard" style="display:none;">
+    <div class="status-row">
+      <div class="dot" id="statusDot"></div>
+      <strong id="statusText">Idle</strong>
+    </div>
+    <a href="#" id="ghLink" class="gh-link" target="_blank" style="display:none;">View live logs on GitHub →</a>
+  </div>
+
+  <div class="card">
+    <div class="status-row"><strong>Saved Recordings</strong></div>
+    <div id="recordings" class="muted">Loading...</div>
+  </div>
+</div>
+
+<script>
+const recordBtn = document.getElementById('recordBtn');
+const statusCard = document.getElementById('statusCard');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const ghLink = document.getElementById('ghLink');
+
+let pollTimer = null;
+
+recordBtn.addEventListener('click', async () => {
+  const url = document.getElementById('url').value.trim();
+  const title = document.getElementById('title').value.trim();
+  if (!url) return alert('Paste a live URL first');
+
+  recordBtn.disabled = true;
+  const res = await fetch('/api/trigger', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, title }),
+  });
+  const data = await res.json();
+  if (data.error) {
+    alert(data.error);
+    recordBtn.disabled = false;
+    return;
+  }
+
+  statusCard.style.display = 'block';
+  statusText.textContent = 'Job dispatched — waiting for it to start…';
+  // give GitHub a few seconds to register the run before polling
+  setTimeout(pollStatus, 5000);
+});
+
+async function pollStatus() {
+  clearTimeout(pollTimer);
+  const res = await fetch('/api/status');
+  const data = await res.json();
+
+  if (data.status && data.status !== 'none') {
+    const cls = data.status === 'completed' ? `completed ${data.conclusion}` : data.status;
+    statusDot.className = 'dot ' + cls;
+
+    const labels = {
+      queued: 'Queued on GitHub…',
+      in_progress: 'Recording / uploading…',
+    };
+    if (data.status === 'completed') {
+      statusText.textContent = data.conclusion === 'success'
+        ? 'Done — saved to R2'
+        : 'Job finished with an error — check logs';
+      recordBtn.disabled = false;
+      loadRecordings();
+    } else {
+      statusText.textContent = labels[data.status] || data.status;
+    }
+
+    if (data.htmlUrl) {
+      ghLink.href = data.htmlUrl;
+      ghLink.style.display = 'inline';
+    }
+  }
+
+  if (!data.status || data.status !== 'completed') {
+    pollTimer = setTimeout(pollStatus, 8000);
+  }
+}
+
+async function loadRecordings() {
+  const res = await fetch('/api/recordings');
+  const data = await res.json();
+  const el = document.getElementById('recordings');
+  if (!data.items || data.items.length === 0) {
+    el.textContent = 'No recordings yet.';
+    return;
+  }
+  el.innerHTML = '';
+  for (const item of data.items) {
+    const row = document.createElement('div');
+    row.className = 'recording-item';
+    const sizeMb = (item.size / 1024 / 1024).toFixed(1);
+    row.innerHTML = `
+      <div>
+        <div>${item.key}</div>
+        <div class="muted">${sizeMb} MB · ${new Date(item.uploaded).toLocaleString()}</div>
+      </div>
+      <div>
+        <a class="watch" href="/api/watch/${encodeURIComponent(item.key)}" target="_blank">Watch</a>
+        &nbsp;·&nbsp;
+        <a class="watch" href="/api/watch/${encodeURIComponent(item.key)}?download=1">Download</a>
+      </div>
+    `;
+    el.appendChild(row);
+  }
+}
+
+loadRecordings();
+</script>
+</body>
+</html>
